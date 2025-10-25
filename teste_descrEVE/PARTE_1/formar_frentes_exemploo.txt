@@ -1,0 +1,71 @@
+-- ==========================================================
+-- FORMAÇÃO DE FRENTES DE FOGO - TESTE DESCREVE FOGO
+-- ==========================================================
+-- Objetivo:
+-- Reproduzir, em menor escala, a lógica usada no DescrEVE Fogo
+-- para agrupar focos de calor e formar frentes de fogo.
+--
+-- Entradas:
+--   evento_fogo_teste.focos
+--
+-- Saídas:
+--   evento_fogo_teste.frente_fogo
+--
+-- Observação:
+--   O script abaixo usa apenas as colunas disponíveis no
+--   arquivo focos_teste.csv.
+-- ==========================================================
+
+
+DO $$
+BEGIN
+    --Criar buffers de 500 metros ao redor dos focos
+    WITH buffer_per_day AS (
+        SELECT
+            DATE(f.data_hora_gmt) AS data_frente,
+            (ST_Dump(
+                ST_Union(
+                    ST_Buffer(f.geom::geography, 500, 'endcap=square')::geometry
+                )
+            )).geom AS geomk
+        FROM evento_fogo_teste.focos f
+        GROUP BY DATE(f.data_hora_gmt)
+    ),
+
+    --Calcular métricas básicas por frente (dia + polígono)
+    ordered_fire_fronts AS (
+        SELECT 
+            b.data_frente,
+            b.geomk,
+            COUNT(f.id_foco_bdq) AS qtd_focos,
+            MAX(f.frp) AS max_frp
+        FROM buffer_per_day b
+        JOIN evento_fogo_teste.focos f
+          ON ST_Intersects(b.geomk, f.geom)
+         AND b.data_frente = DATE(f.data_hora_gmt)
+        GROUP BY b.data_frente, b.geomk
+    ),
+
+    --Dissolver geometrias sobrepostas (união diária)
+    dissolved_fire_fronts AS (
+        SELECT 
+            o.data_frente,
+            (ST_Dump(ST_Union(o.geomk))).geom AS geom,
+            SUM(o.qtd_focos) AS qtd_focos,
+            MAX(o.max_frp) AS max_frp
+        FROM ordered_fire_fronts o
+        GROUP BY o.data_frente
+    )
+
+    --Inserir resultado na tabela de frentes
+    INSERT INTO evento_fogo_teste.frente_fogo (data_inicio, data_fim, qtd_focos, max_frp, geom)
+    SELECT
+        data_frente AS data_inicio,
+        data_frente AS data_fim,
+        qtd_focos,
+        max_frp,
+        geom
+    FROM dissolved_fire_fronts;
+
+END;
+$$ LANGUAGE plpgsql;
